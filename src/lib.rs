@@ -189,10 +189,33 @@ impl SourceOrigin {
     }
 }
 
+struct SourceOrigins {
+    routes: Vec<SourceOrigin>,
+    entries: Vec<SourceOrigin>,
+}
+
+impl SourceOrigins {
+    fn declaring_roles(&self) -> &[SourceOrigin] {
+        if self.entries.is_empty() {
+            &self.routes
+        } else {
+            &self.entries
+        }
+    }
+
+    fn belongs_to(&self, owner: &str) -> bool {
+        let mut libraries = self
+            .declaring_roles()
+            .iter()
+            .filter_map(SourceOrigin::library);
+        libraries.next() == Some(owner) && libraries.all(|library| library == owner)
+    }
+}
+
 #[derive(Default)]
 struct Loader {
     sources: Vec<Arc<str>>,
-    origins: Vec<Vec<SourceOrigin>>,
+    origins: Vec<SourceOrigins>,
     include_edges: Vec<Vec<usize>>,
     loaded_sources: HashMap<SourceIdentity, usize>,
     loaded_libraries: HashSet<String>,
@@ -203,7 +226,7 @@ struct Loader {
 /// Parsed C0 source units, in declaration order.
 pub struct ParsedProgram {
     sources: Vec<Arc<str>>,
-    origins: Vec<Vec<SourceOrigin>>,
+    origins: Vec<SourceOrigins>,
     declarations: Vec<Declaration>,
 }
 
@@ -247,7 +270,10 @@ impl Loader {
         self.loaded_sources
             .insert(source.identity.clone(), source_id);
         self.sources.push(Arc::clone(&source.name));
-        self.origins.push(vec![origin]);
+        self.origins.push(SourceOrigins {
+            routes: vec![origin],
+            entries: Vec::new(),
+        });
         self.include_edges.push(Vec::new());
         let mut tokens = lexer::lex(&source.text, source_id)
             .map_err(|error| error.with_kind(DiagnosticKind::Syntax))?
@@ -266,10 +292,13 @@ impl Loader {
                             .location
                             .error(format!("could not load '{path}': {error}"))
                     })?;
-                    let target =
-                        self.source(imported, self.origins[source_id][0].clone(), resolver)?;
+                    let target = self.source(
+                        imported,
+                        self.origins[source_id].routes[0].clone(),
+                        resolver,
+                    )?;
                     self.include_edges[source_id].push(target);
-                    for origin in self.origins[source_id].clone() {
+                    for origin in self.origins[source_id].routes.clone() {
                         self.assign_origin(target, &origin);
                     }
                 }
@@ -280,7 +309,9 @@ impl Loader {
                 _ => unreachable!("import token"),
             }
         }
-        let native = self.origins[source_id].contains(&SourceOrigin::Builtin);
+        let native = self.origins[source_id]
+            .routes
+            .contains(&SourceOrigin::Builtin);
         let declarations = parser::parse(tokens, &mut self.aliases, native)
             .map_err(|error| error.with_kind(DiagnosticKind::Syntax))?;
         self.declarations.extend(declarations);
@@ -291,8 +322,8 @@ impl Loader {
         // A file can already have been loaded through a root or a shared include.
         let mut pending = vec![source_id];
         while let Some(source_id) = pending.pop() {
-            if !self.origins[source_id].contains(origin) {
-                self.origins[source_id].push(origin.clone());
+            if !self.origins[source_id].routes.contains(origin) {
+                self.origins[source_id].routes.push(origin.clone());
                 pending.extend_from_slice(&self.include_edges[source_id]);
             }
         }
@@ -320,13 +351,13 @@ impl Loader {
             .library(name)
             .map_err(|error| location.error(format!("could not load library '{name}': {error}")))?;
         let name: Arc<str> = Arc::from(name);
-        self.source(
-            library.header,
-            SourceOrigin::LibraryHeader(Arc::clone(&name)),
-            resolver,
-        )?;
+        let origin = SourceOrigin::LibraryHeader(Arc::clone(&name));
+        let header_id = self.source(library.header, origin.clone(), resolver)?;
+        self.origins[header_id].entries.push(origin);
         if let Some(source) = library.implementation {
-            self.source(source, SourceOrigin::LibraryImplementation(name), resolver)?;
+            let origin = SourceOrigin::LibraryImplementation(name);
+            let implementation_id = self.source(source, origin.clone(), resolver)?;
+            self.origins[implementation_id].entries.push(origin);
         }
         Ok(())
     }

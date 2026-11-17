@@ -22,7 +22,7 @@ C0 is a safe subset of C designed for learning imperative programming. This inte
 potoo-c0 [-d] [--no-purity-check] [-l LIBRARY] [-L DIRECTORY] FILE... [-- ARG...]
 ```
 
-Source files share one compilation unit in the order supplied. A leading `#use "file.c0"` resolves relative to the importing file. A leading `#use <library>` loads a built-in library or searches the supplied `-L` directories for a C0 header and implementation. A struct declared without a layout in a library header remains opaque outside that library. The CLI uses canonical filesystem paths to identify files, including paths that contain bytes outside UTF-8.
+Source files share one compilation unit in the order supplied. A leading `#use "file.c0"` resolves relative to the importing file. A leading `#use <library>` loads a built-in library or searches the supplied `-L` directories for a C0 header and implementation. A library header can publish a concrete struct layout. Private layouts remain visible to their owning library even when other libraries share the same source files. The CLI uses canonical filesystem paths to identify files, including paths that contain bytes outside UTF-8.
 
 The executable invokes `int main()`, prints the returned integer, and exits successfully on a normal return. Runtime diagnostics include C0 locations and the call stack. The `-d` option enables dynamic contract checks. Ordinary `assert` statements run in either mode.
 

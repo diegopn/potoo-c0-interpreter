@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use crate::{
-    CheckOptions, Diagnostic, Location, SourceOrigin, libraries,
+    CheckOptions, Diagnostic, Location, SourceOrigin, SourceOrigins, libraries,
     syntax::{
         Binding, Contract, ContractKind, Declaration, Expression, ExpressionKind, Function,
         Statement, StatementKind, Type,
@@ -42,7 +42,7 @@ type Variables<'a> = HashMap<&'a str, Variable<'a>>;
 
 pub(crate) fn validate<'a>(
     declarations: &'a [Declaration],
-    origins: &'a [Vec<SourceOrigin>],
+    origins: &'a [SourceOrigins],
     options: CheckOptions,
 ) -> Result<Checked<'a>, Diagnostic> {
     let mut checker = Checker {
@@ -75,7 +75,7 @@ pub(crate) fn validate<'a>(
                 name,
                 fields: None,
             } => {
-                for origin in &origins[location.source_id] {
+                for origin in origins[location.source_id].declaring_roles() {
                     let owner = match origin {
                         SourceOrigin::Builtin => None,
                         SourceOrigin::LibraryHeader(library) => Some(library.as_ref()),
@@ -169,7 +169,7 @@ pub(crate) fn validate<'a>(
 struct Checker<'a> {
     signatures: HashMap<&'a str, Signature<'a>>,
     structures: HashMap<&'a str, StructLayout<'a>>,
-    origins: &'a [Vec<SourceOrigin>],
+    origins: &'a [SourceOrigins],
     opaque: HashMap<&'a str, HashSet<Option<&'a str>>>,
     format_forms: HashSet<&'a str>,
     aliases: HashSet<&'a str>,
@@ -182,7 +182,8 @@ struct Checker<'a> {
 
 struct StructLayout<'a> {
     fields: &'a [Binding],
-    private_to: Option<&'a [SourceOrigin]>,
+    source_id: usize,
+    private_to: Option<&'a str>,
 }
 
 fn require(actual: Type, expected: &Type, location: Location) -> Result<(), Diagnostic> {
@@ -291,11 +292,9 @@ impl<'a> Checker<'a> {
         self.structures
             .get(name)
             .filter(|layout| {
-                layout.private_to.is_none_or(|owners| {
-                    self.origins[location.source_id]
-                        .iter()
-                        .filter_map(SourceOrigin::library)
-                        .any(|library| owners.iter().any(|owner| owner.library() == Some(library)))
+                layout.private_to.is_none_or(|owner| {
+                    layout.source_id == location.source_id
+                        || self.origins[location.source_id].belongs_to(owner)
                 })
             })
             .map(|layout| layout.fields)
@@ -309,22 +308,76 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    fn private_struct_owner(
+        &self,
+        name: &str,
+        location: Location,
+    ) -> Result<Option<&'a str>, Diagnostic> {
+        let origins = &self.origins[location.source_id];
+        let reserved = self.opaque.get(name);
+        let opaque_error =
+            || location.error(format!("struct '{name}' is opaque outside its library"));
+        if reserved.is_some_and(|owners| owners.contains(&None)) {
+            return Err(opaque_error());
+        }
+        if origins.routes.contains(&SourceOrigin::Builtin) {
+            return Ok(None);
+        }
+
+        let implementation = |origin: &'a SourceOrigin| match origin {
+            SourceOrigin::LibraryImplementation(library) => Some(library.as_ref()),
+            _ => None,
+        };
+        let is_owner = |library| reserved.is_none_or(|owners| owners.contains(&Some(library)));
+        let entries = origins.entries.iter().filter_map(implementation);
+        let routes = origins.routes.iter().filter_map(implementation);
+        let claimed = routes.clone().filter(|&library| is_owner(library));
+        let has_header_entry = origins
+            .entries
+            .iter()
+            .any(|origin| matches!(origin, SourceOrigin::LibraryHeader(_)));
+        let has_implementation_entry = entries.clone().next().is_some();
+        let has_implementation_route = routes.clone().next().is_some();
+        let needs_implementation_owner = has_implementation_entry
+            || (has_implementation_route
+                && (!has_header_entry || (reserved.is_some() && claimed.clone().next().is_some())));
+
+        if needs_implementation_owner {
+            let mut candidates = if has_implementation_entry {
+                entries
+            } else {
+                routes
+            }
+            .filter(|&library| is_owner(library));
+            let owner = candidates.next().ok_or_else(opaque_error)?;
+            if candidates.next().is_some() {
+                return Err(location.error(format!(
+                    "struct '{name}' has multiple possible library owners"
+                )));
+            }
+            // Publishing an implementation layout takes a header route from its owner.
+            let public = origins.routes.iter().any(|origin| {
+                matches!(origin, SourceOrigin::LibraryHeader(library) if library.as_ref() == owner)
+            });
+            return Ok((!public).then_some(owner));
+        }
+        if reserved.is_some_and(|owners| {
+            !origins.declaring_roles().iter().any(|origin| {
+                matches!(origin, SourceOrigin::LibraryHeader(library) if owners.contains(&Some(library.as_ref())))
+            })
+        }) {
+            return Err(opaque_error());
+        }
+        Ok(None)
+    }
+
     fn structure(
         &mut self,
         location: Location,
         name: &'a str,
         fields: &'a [Binding],
     ) -> Result<(), Diagnostic> {
-        let origins = &self.origins[location.source_id];
-        if self.opaque.get(name).is_some_and(|owners| {
-            owners.contains(&None)
-                || !origins
-                    .iter()
-                    .filter_map(SourceOrigin::library)
-                    .any(|library| owners.contains(&Some(library)))
-        }) {
-            return Err(location.error(format!("struct '{name}' is opaque outside its library")));
-        }
+        let private_to = self.private_struct_owner(name, location)?;
         if self.structures.contains_key(name) {
             return Err(location.error(format!("struct '{name}' is already defined")));
         }
@@ -338,18 +391,14 @@ impl<'a> Checker<'a> {
                     .error(format!("field '{}' is declared twice", field.name)));
             }
         }
-        let private_to = (origins
-            .iter()
-            .any(|origin| matches!(origin, SourceOrigin::LibraryImplementation(_)))
-            && !origins.iter().any(|origin| {
-                matches!(
-                    origin,
-                    SourceOrigin::Builtin | SourceOrigin::LibraryHeader(_)
-                )
-            }))
-        .then_some(origins.as_slice());
-        self.structures
-            .insert(name, StructLayout { fields, private_to });
+        self.structures.insert(
+            name,
+            StructLayout {
+                fields,
+                source_id: location.source_id,
+                private_to,
+            },
+        );
         Ok(())
     }
 
