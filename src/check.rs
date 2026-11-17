@@ -67,6 +67,8 @@ pub(crate) fn validate<'a>(
             target: CallTarget::default(),
         },
     );
+    // Record public layouts so later forward declarations retain the existing layout.
+    let mut public_layouts = HashSet::new();
     let mut ensured_parameters = HashMap::<&str, HashSet<usize>>::new();
     for declaration in declarations {
         match declaration {
@@ -78,10 +80,25 @@ pub(crate) fn validate<'a>(
                 for origin in origins[location.source_id].declaring_roles() {
                     let owner = match origin {
                         SourceOrigin::Builtin => None,
-                        SourceOrigin::LibraryHeader(library) => Some(library.as_ref()),
+                        SourceOrigin::LibraryHeader(library)
+                            if !public_layouts.contains(name.as_str()) =>
+                        {
+                            Some(library.as_ref())
+                        }
                         _ => continue,
                     };
                     checker.opaque.entry(name).or_default().insert(owner);
+                }
+            }
+            Declaration::Struct {
+                location,
+                name,
+                fields: Some(_),
+            } => {
+                if origins[location.source_id].has_header_route()
+                    && matches!(checker.private_struct_owner(name, *location), Ok(None))
+                {
+                    public_layouts.insert(name.as_str());
                 }
             }
             Declaration::Function(function) => {
@@ -106,7 +123,7 @@ pub(crate) fn validate<'a>(
                     });
                 }
             }
-            _ => {}
+            Declaration::Alias(_) => {}
         }
     }
 
@@ -331,16 +348,12 @@ impl<'a> Checker<'a> {
         let is_owner = |library| reserved.is_none_or(|owners| owners.contains(&Some(library)));
         let entries = origins.entries.iter().filter_map(implementation);
         let routes = origins.routes.iter().filter_map(implementation);
-        let claimed = routes.clone().filter(|&library| is_owner(library));
-        let has_header_entry = origins
-            .entries
-            .iter()
-            .any(|origin| matches!(origin, SourceOrigin::LibraryHeader(_)));
         let has_implementation_entry = entries.clone().next().is_some();
         let has_implementation_route = routes.clone().next().is_some();
+        let has_header_route = origins.has_header_route();
+        let claimed = reserved.is_some() && routes.clone().any(is_owner);
         let needs_implementation_owner = has_implementation_entry
-            || (has_implementation_route
-                && (!has_header_entry || (reserved.is_some() && claimed.clone().next().is_some())));
+            || (has_implementation_route && (!has_header_route || claimed));
 
         if needs_implementation_owner {
             let mut candidates = if has_implementation_entry {

@@ -203,6 +203,15 @@ impl SourceOrigins {
         }
     }
 
+    fn has_header_route(&self) -> bool {
+        self.routes.iter().any(|origin| {
+            matches!(
+                origin,
+                SourceOrigin::Builtin | SourceOrigin::LibraryHeader(_)
+            )
+        })
+    }
+
     fn belongs_to(&self, owner: &str) -> bool {
         let mut libraries = self
             .declaring_roles()
