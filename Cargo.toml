@@ -1,0 +1,16 @@
+[package]
+name = "potoo-c0-interpreter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/diegopn/potoo-c0-interpreter"
+readme = "README.md"
+description = "An independent Rust interpreter for C0, a safe subset of the C programming language."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "potoo-c0"
+path = "src/bin/potoo-c0.rs"
