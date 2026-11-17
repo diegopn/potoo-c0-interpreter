@@ -40,6 +40,48 @@ struct Variable<'a> {
 
 type Variables<'a> = HashMap<&'a str, Variable<'a>>;
 
+struct HeaderImports<'a>(HashMap<&'a str, HashSet<&'a str>>);
+
+impl<'a> HeaderImports<'a> {
+    fn from_sources(sources: &'a [SourceOrigins]) -> Self {
+        let mut imports = HashMap::<&str, HashSet<&str>>::new();
+        for source in sources {
+            // File imports already carry their enclosing header's route.
+            for route in &source.routes {
+                if let SourceOrigin::LibraryHeader(library) = route {
+                    imports
+                        .entry(library)
+                        .or_default()
+                        .extend(source.library_imports.iter().map(String::as_str));
+                }
+            }
+        }
+        Self(imports)
+    }
+
+    fn exposes_layout(&self, library: &str, layout: &SourceOrigins) -> bool {
+        if layout.routes.contains(&SourceOrigin::Builtin) {
+            return true;
+        }
+        let mut pending = vec![library];
+        let mut visited = HashSet::new();
+        while let Some(header) = pending.pop() {
+            if !visited.insert(header) {
+                continue;
+            }
+            if layout.routes.iter().any(
+                |route| matches!(route, SourceOrigin::LibraryHeader(name) if name.as_ref() == header),
+            ) {
+                return true;
+            }
+            if let Some(imports) = self.0.get(header) {
+                pending.extend(imports.iter().copied());
+            }
+        }
+        false
+    }
+}
+
 pub(crate) fn validate<'a>(
     declarations: &'a [Declaration],
     origins: &'a [SourceOrigins],
@@ -67,8 +109,22 @@ pub(crate) fn validate<'a>(
             target: CallTarget::default(),
         },
     );
-    // Record public layouts so later forward declarations retain the existing layout.
-    let mut public_layouts = HashSet::new();
+    let header_imports = HeaderImports::from_sources(origins);
+    // Ownership depends on the complete interface. Field uses are checked in source order below.
+    let mut header_layouts = HashMap::new();
+    for declaration in declarations {
+        if let Declaration::Struct {
+            name,
+            fields: Some(_),
+            location,
+        } = declaration
+        {
+            let source = &origins[location.source_id];
+            if source.has_header_route() {
+                header_layouts.insert(name.as_str(), source);
+            }
+        }
+    }
     let mut ensured_parameters = HashMap::<&str, HashSet<usize>>::new();
     for declaration in declarations {
         match declaration {
@@ -81,24 +137,15 @@ pub(crate) fn validate<'a>(
                     let owner = match origin {
                         SourceOrigin::Builtin => None,
                         SourceOrigin::LibraryHeader(library)
-                            if !public_layouts.contains(name.as_str()) =>
+                            if !header_layouts.get(name.as_str()).is_some_and(|layout| {
+                                header_imports.exposes_layout(library, layout)
+                            }) =>
                         {
                             Some(library.as_ref())
                         }
                         _ => continue,
                     };
                     checker.opaque.entry(name).or_default().insert(owner);
-                }
-            }
-            Declaration::Struct {
-                location,
-                name,
-                fields: Some(_),
-            } => {
-                if origins[location.source_id].has_header_route()
-                    && matches!(checker.private_struct_owner(name, *location), Ok(None))
-                {
-                    public_layouts.insert(name.as_str());
                 }
             }
             Declaration::Function(function) => {
@@ -123,7 +170,7 @@ pub(crate) fn validate<'a>(
                     });
                 }
             }
-            Declaration::Alias(_) => {}
+            Declaration::Struct { .. } | Declaration::Alias(_) => {}
         }
     }
 

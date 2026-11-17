@@ -192,6 +192,7 @@ impl SourceOrigin {
 struct SourceOrigins {
     routes: Vec<SourceOrigin>,
     entries: Vec<SourceOrigin>,
+    library_imports: Vec<String>,
 }
 
 impl SourceOrigins {
@@ -282,6 +283,7 @@ impl Loader {
         self.origins.push(SourceOrigins {
             routes: vec![origin],
             entries: Vec::new(),
+            library_imports: Vec::new(),
         });
         self.include_edges.push(Vec::new());
         let mut tokens = lexer::lex(&source.text, source_id)
@@ -313,6 +315,7 @@ impl Loader {
                 }
                 TokenKind::Import(Import::Library(name)) => {
                     self.library(&name, token.location, resolver)?;
+                    self.origins[source_id].library_imports.push(name);
                 }
                 TokenKind::IgnoredDirective => {}
                 _ => unreachable!("import token"),
