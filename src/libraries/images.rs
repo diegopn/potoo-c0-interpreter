@@ -3,7 +3,7 @@ use crate::{
     heap::{Heap, Memory, Value},
 };
 
-use super::{Resources, resource_id};
+use super::{Resources, invalid_arguments, resource_id};
 
 pub(super) struct ImageData {
     width: i32,
@@ -146,7 +146,7 @@ impl Resources {
                     self.image_data(image, location)?.pixels.clone(),
                 )));
             }
-            _ => unreachable!("validated image arguments"),
+            _ => return Err(invalid_arguments(name, location)),
         };
         let Image {
             width,

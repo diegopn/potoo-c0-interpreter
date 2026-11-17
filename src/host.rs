@@ -18,6 +18,11 @@ pub trait SourceResolver {
         Err(io::Error::new(io::ErrorKind::NotFound, path.to_owned()))
     }
 
+    /// Resolve relative to the importing source, whose original file path is available.
+    fn source_from(&mut self, from: &Source, path: &str) -> io::Result<Source> {
+        self.source(&from.name, path)
+    }
+
     fn library(&mut self, name: &str) -> io::Result<SourceLibrary> {
         Err(io::Error::new(io::ErrorKind::NotFound, name.to_owned()))
     }
@@ -59,7 +64,7 @@ pub trait RuntimeHost {
         Ok(())
     }
 
-    /// Get the next line of console input without a line ending.
+    /// Get the next ASCII line of console input without a line ending.
     fn read_line(&mut self) -> io::Result<Option<Vec<u8>>> {
         Err(unsupported("console input"))
     }
@@ -74,7 +79,7 @@ pub trait RuntimeHost {
         Err(unsupported("file input"))
     }
 
-    /// Program arguments, excluding the executable name.
+    /// ASCII program arguments, excluding the executable name.
     fn arguments(&mut self) -> io::Result<Vec<Vec<u8>>> {
         Ok(Vec::new())
     }

@@ -3,7 +3,7 @@ use crate::{
     heap::{Heap, Value},
 };
 
-use super::pointer;
+use super::{invalid_arguments, pointer};
 
 pub(super) const RAND: &str = "
     struct rand;
@@ -62,10 +62,10 @@ fn double(value: &Value, location: Location) -> Result<f64, Diagnostic> {
     let Value::Pointer(Some(memory)) = value else {
         return Err(location.error("double-precision argument is NULL"));
     };
-    let Value::Float(value) = memory.borrow()[0] else {
-        unreachable!("validated double-precision argument");
-    };
-    Ok(value)
+    match memory.borrow().first() {
+        Some(Value::Float(value)) => Ok(*value),
+        _ => Err(location.error("invalid double-precision handle")),
+    }
 }
 
 fn truncate(value: f64) -> i32 {
@@ -100,12 +100,12 @@ pub(super) fn call(
                 .as_ref()
                 .ok_or_else(|| location.error("random generator is NULL"))?;
             let mut state = generator.borrow_mut();
-            let Value::Int(seed) = state[0] else {
-                unreachable!("validated random generator")
+            let Some(Value::Int(seed)) = state.first_mut() else {
+                return Err(location.error("invalid random generator handle"));
             };
-            let seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            state[0] = Value::Int(seed);
-            return Ok(Value::Int(seed));
+            let value = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *seed = value;
+            return Ok(Value::Int(value));
         }
         (
             op @ ("fadd" | "fsub" | "fmul" | "fdiv" | "fless"),
@@ -141,7 +141,7 @@ pub(super) fn call(
         }
         ("dtoi", [value]) => return Ok(Value::Int(truncate(double(value, location)?))),
         ("print_dub", [value]) => format!("{:.6}", double(value, location)?),
-        _ => unreachable!("validated numeric library call '{name}'"),
+        _ => return Err(invalid_arguments(name, location)),
     };
     host.write(output.as_bytes())
         .map_err(|error| location.error(format!("{name}: {error}")))?;

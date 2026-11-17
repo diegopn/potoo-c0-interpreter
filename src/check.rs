@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use crate::{
-    CheckOptions, Diagnostic, Location, libraries,
+    CheckOptions, Diagnostic, Location, SourceOrigin, libraries,
     syntax::{
         Binding, Contract, ContractKind, Declaration, Expression, ExpressionKind, Function,
         Statement, StatementKind, Type,
@@ -40,25 +40,17 @@ struct Variable<'a> {
 
 type Variables<'a> = HashMap<&'a str, Variable<'a>>;
 
-pub(crate) fn validate(
-    declarations: &[Declaration],
+pub(crate) fn validate<'a>(
+    declarations: &'a [Declaration],
+    origins: &'a [Vec<SourceOrigin>],
     options: CheckOptions,
-) -> Result<Checked<'_>, Diagnostic> {
+) -> Result<Checked<'a>, Diagnostic> {
     let mut checker = Checker {
         signatures: HashMap::new(),
         structures: HashMap::new(),
-        opaque: declarations
-            .iter()
-            .filter_map(|declaration| match declaration {
-                Declaration::Struct {
-                    name,
-                    fields: None,
-                    native: true,
-                    ..
-                } => Some(name.as_str()),
-                _ => None,
-            })
-            .collect(),
+        origins,
+        opaque: HashMap::new(),
+        format_forms: HashSet::new(),
         aliases: HashSet::new(),
         referenced: Vec::new(),
         annotation_calls: Vec::new(),
@@ -77,24 +69,44 @@ pub(crate) fn validate(
     );
     let mut ensured_parameters = HashMap::<&str, HashSet<usize>>::new();
     for declaration in declarations {
-        if let Declaration::Function(function) = declaration {
-            for contract in function
-                .contracts
-                .iter()
-                .filter(|c| c.kind == ContractKind::Ensures)
-            {
-                contract.expression.visit(&mut |expression| {
-                    if let ExpressionKind::Variable(name) = &expression.kind
-                        && let Some(index) =
-                            function.parameters.iter().position(|p| p.name == *name)
-                    {
-                        ensured_parameters
-                            .entry(&function.name)
-                            .or_default()
-                            .insert(index);
-                    }
-                });
+        match declaration {
+            Declaration::Struct {
+                location,
+                name,
+                fields: None,
+            } => {
+                for origin in &origins[location.source_id] {
+                    let owner = match origin {
+                        SourceOrigin::Builtin => None,
+                        SourceOrigin::LibraryHeader(library) => Some(library.as_ref()),
+                        _ => continue,
+                    };
+                    checker.opaque.entry(name).or_default().insert(owner);
+                }
             }
+            Declaration::Function(function) => {
+                if function.native && libraries::is_formatted(&function.name) {
+                    checker.format_forms.insert(&function.name);
+                }
+                for contract in function
+                    .contracts
+                    .iter()
+                    .filter(|c| c.kind == ContractKind::Ensures)
+                {
+                    contract.expression.visit(&mut |expression| {
+                        if let ExpressionKind::Variable(name) = &expression.kind
+                            && let Some(index) =
+                                function.parameters.iter().position(|p| p.name == *name)
+                        {
+                            ensured_parameters
+                                .entry(&function.name)
+                                .or_default()
+                                .insert(index);
+                        }
+                    });
+                }
+            }
+            _ => {}
         }
     }
 
@@ -107,7 +119,6 @@ pub(crate) fn validate(
                 location,
                 name,
                 fields: Some(fields),
-                ..
             } => {
                 checker.structure(*location, name, fields)?;
             }
@@ -133,7 +144,11 @@ pub(crate) fn validate(
         }
     }
     let checked = Checked {
-        structures: checker.structures,
+        structures: checker
+            .structures
+            .into_iter()
+            .map(|(name, layout)| (name, layout.fields))
+            .collect(),
         functions: checker
             .signatures
             .into_iter()
@@ -153,14 +168,21 @@ pub(crate) fn validate(
 
 struct Checker<'a> {
     signatures: HashMap<&'a str, Signature<'a>>,
-    structures: HashMap<&'a str, &'a [Binding]>,
-    opaque: HashSet<&'a str>,
+    structures: HashMap<&'a str, StructLayout<'a>>,
+    origins: &'a [Vec<SourceOrigin>],
+    opaque: HashMap<&'a str, HashSet<Option<&'a str>>>,
+    format_forms: HashSet<&'a str>,
     aliases: HashSet<&'a str>,
     referenced: Vec<(&'a str, Location)>,
     annotation_calls: Vec<(&'a str, Location)>,
     annotation: Option<ContractKind>,
     return_type: &'a Type,
     protected: HashSet<&'a str>,
+}
+
+struct StructLayout<'a> {
+    fields: &'a [Binding],
+    private_to: Option<&'a [SourceOrigin]>,
 }
 
 fn require(actual: Type, expected: &Type, location: Location) -> Result<(), Diagnostic> {
@@ -265,11 +287,24 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn layout(&self, name: &str, location: Location) -> Result<&'a [Binding], Diagnostic> {
+        self.structures
+            .get(name)
+            .filter(|layout| {
+                layout.private_to.is_none_or(|owners| {
+                    self.origins[location.source_id]
+                        .iter()
+                        .filter_map(SourceOrigin::library)
+                        .any(|library| owners.iter().any(|owner| owner.library() == Some(library)))
+                })
+            })
+            .map(|layout| layout.fields)
+            .ok_or_else(|| location.error(format!("struct '{name}' has no visible definition")))
+    }
+
     fn require_layout(&self, ty: &Type, location: Location) -> Result<(), Diagnostic> {
-        if let Type::Struct(name) = ty
-            && !self.structures.contains_key(name.as_str())
-        {
-            return Err(location.error(format!("struct '{name}' has no visible definition")));
+        if let Type::Struct(name) = ty {
+            self.layout(name, location)?;
         }
         Ok(())
     }
@@ -280,8 +315,15 @@ impl<'a> Checker<'a> {
         name: &'a str,
         fields: &'a [Binding],
     ) -> Result<(), Diagnostic> {
-        if self.opaque.contains(name) {
-            return Err(location.error(format!("struct '{name}' is opaque in a library")));
+        let origins = &self.origins[location.source_id];
+        if self.opaque.get(name).is_some_and(|owners| {
+            owners.contains(&None)
+                || !origins
+                    .iter()
+                    .filter_map(SourceOrigin::library)
+                    .any(|library| owners.contains(&Some(library)))
+        }) {
+            return Err(location.error(format!("struct '{name}' is opaque outside its library")));
         }
         if self.structures.contains_key(name) {
             return Err(location.error(format!("struct '{name}' is already defined")));
@@ -296,7 +338,18 @@ impl<'a> Checker<'a> {
                     .error(format!("field '{}' is declared twice", field.name)));
             }
         }
-        self.structures.insert(name, fields);
+        let private_to = (origins
+            .iter()
+            .any(|origin| matches!(origin, SourceOrigin::LibraryImplementation(_)))
+            && !origins.iter().any(|origin| {
+                matches!(
+                    origin,
+                    SourceOrigin::Builtin | SourceOrigin::LibraryHeader(_)
+                )
+            }))
+        .then_some(origins.as_slice());
+        self.structures
+            .insert(name, StructLayout { fields, private_to });
         Ok(())
     }
 
@@ -320,13 +373,7 @@ impl<'a> Checker<'a> {
             small(&function.result, function.location)?;
         }
 
-        if !function.native
-            && libraries::is_formatted(&function.name)
-            && self
-                .signatures
-                .get(function.name.as_str())
-                .is_some_and(|signature| signature.target.native)
-        {
+        if !function.native && self.format_forms.contains(function.name.as_str()) {
             return Err(function.location.error(format!(
                 "'{}' is a reserved library format form",
                 function.name
@@ -504,9 +551,7 @@ impl<'a> Checker<'a> {
                 let Type::Struct(name) = self.expression(base, variables)? else {
                     return Err(location.error("field access requires a struct"));
                 };
-                let fields = self.structures.get(name.as_str()).ok_or_else(|| {
-                    location.error(format!("struct '{name}' has no visible definition"))
-                })?;
+                let fields = self.layout(&name, location)?;
                 fields
                     .iter()
                     .find(|binding| &binding.name == field)

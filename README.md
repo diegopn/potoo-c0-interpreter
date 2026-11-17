@@ -22,19 +22,22 @@ C0 is a safe subset of C designed for learning imperative programming. This inte
 potoo-c0 [-d] [--no-purity-check] [-l LIBRARY] [-L DIRECTORY] FILE... [-- ARG...]
 ```
 
-Source files share one compilation unit in the order supplied. A leading `#use "file.c0"` resolves relative to the importing file. A leading `#use <library>` loads a built-in library or searches the supplied `-L` directories for a C0 header and implementation. The executable invokes `int main()`, prints the returned integer, and exits successfully on a normal return. Runtime diagnostics include C0 locations and the call stack. The `-d` option enables dynamic contract checks. Ordinary `assert` statements run in either mode.
+Source files share one compilation unit in the order supplied. A leading `#use "file.c0"` resolves relative to the importing file. A leading `#use <library>` loads a built-in library or searches the supplied `-L` directories for a C0 header and implementation. A struct declared without a layout in a library header remains opaque outside that library. The CLI uses canonical filesystem paths to identify files, including paths that contain bytes outside UTF-8.
+
+The executable invokes `int main()`, prints the returned integer, and exits successfully on a normal return. Runtime diagnostics include C0 locations and the call stack. The `-d` option enables dynamic contract checks. Ordinary `assert` statements run in either mode.
 
 ## Rust library
 
-Use `parse` with named sources and a `SourceResolver` to load imports, then call `ParsedProgram::check` and `CheckedProgram::run`. The run method returns the integer from `main`. The host provides console streams, program arguments, file reads, image codecs, and terminal operations through `RuntimeHost`. Source-position events let the host pause or cancel execution.
+Use `parse` with named sources and a `SourceResolver` to load imports, then call `ParsedProgram::check` and `CheckedProgram::run`. The run method returns the integer from `main`. Use `Source::from_path` to preserve file identity and `SourceResolver::source_from` to resolve relative includes against the original path. The host provides console streams, program arguments, file reads, image codecs, and terminal operations through `RuntimeHost`. Source-position events let the host pause or cancel execution.
 
-The built-in interfaces cover `conio`, `string`, `parse`, `file`, `args`, `img`, `rand`, `util`, `curses`, `fpt`, and `dub`. [C0 Library Documentation](https://www.cs.cmu.edu/~wlovas/15122-r11/misc/c0-libraries.pdf)
+The built-in interfaces cover `conio`, `string`, `parse`, `file`, `args`, `img`, `rand`, `util`, `curses`, `fpt`, and `dub`. Loading the format forms `printf` and `format` reserves those names against ordinary function declarations in the compilation unit. The integer parsers require at least one valid digit after any sign and hexadecimal prefix. [C0 Library Documentation](https://www.cs.cmu.edu/~wlovas/15122-r11/misc/c0-libraries.pdf)
 
 ## Runtime limits
 
 - The evaluator uses the Rust call stack and limits execution to 128 active C0 calls.
 - The CLI uses FFmpeg for image file decoding and encoding. The supported file formats depend on the installed build. Embedding applications provide their own image codecs.
 - Curses programs require a host that implements the terminal interface. The bundled CLI supplies line-oriented console I/O.
+- Console lines, file lines, and program arguments must be ASCII. The first zero byte ends the text. Bytes outside the ASCII range in the resulting text produce a runtime diagnostic.
 - Third-party libraries that use the original compiler's native C ABI need a C0 implementation to load here.
 - The interpreter checks purity with its own conservative analysis of writes and function calls. Use `--no-purity-check` to disable that analysis while keeping ordinary type and initialization checks.
 

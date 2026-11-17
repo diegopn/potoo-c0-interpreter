@@ -3,7 +3,7 @@ use crate::{
     heap::{Heap, Value},
 };
 
-use super::Resources;
+use super::{Resources, invalid_arguments};
 
 pub(super) const HEADER: &str = "
     struct _win_st;
@@ -61,21 +61,22 @@ impl Resources {
         heap: &mut Heap,
         location: Location,
     ) -> Result<Value, Diagnostic> {
-        let args: Vec<_> = args
+        let args = args
             .iter()
-            .map(|arg| match arg {
-                Value::Int(value) => TerminalArgument::Int(*value),
-                Value::Bool(value) => TerminalArgument::Bool(*value),
-                Value::String(value) => TerminalArgument::Text(value),
-                Value::Pointer(value) => TerminalArgument::Window(value.as_ref().map(|window| {
-                    let Value::Window(id) = window.borrow()[0] else {
-                        unreachable!("validated window handle")
-                    };
-                    id
-                })),
-                _ => unreachable!("validated terminal argument"),
+            .map(|arg| {
+                Ok(match arg {
+                    Value::Int(value) => TerminalArgument::Int(*value),
+                    Value::Bool(value) => TerminalArgument::Bool(*value),
+                    Value::String(value) => TerminalArgument::Text(value),
+                    Value::Pointer(None) => TerminalArgument::Window(None),
+                    Value::Pointer(Some(window)) => match window.borrow().first() {
+                        Some(Value::Window(id)) => TerminalArgument::Window(Some(*id)),
+                        _ => return Err(location.error("invalid terminal handle")),
+                    },
+                    _ => return Err(invalid_arguments(name, location)),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let result = host
             .terminal(name, &args)
             .map_err(|error| location.error(format!("{name}: {error}")))?;

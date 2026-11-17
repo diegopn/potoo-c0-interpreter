@@ -16,6 +16,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     io::Write,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -109,18 +110,46 @@ impl fmt::Display for Diagnostic {
 
 impl std::error::Error for Diagnostic {}
 
-/// A source unit and its stable identity. Imports with the same identity are loaded once.
+/// A source unit with a diagnostic name and stable identity for import deduplication.
 #[derive(Clone, Debug)]
 pub struct Source {
     pub name: Arc<str>,
     pub text: String,
+    identity: SourceIdentity,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum SourceIdentity {
+    Named(Arc<str>),
+    File(PathBuf),
+    Builtin(String),
 }
 
 impl Source {
+    /// Create a virtual source whose name identifies it to the resolver.
     pub fn new(name: impl Into<Arc<str>>, text: impl Into<String>) -> Self {
+        let name = name.into();
         Self {
-            name: name.into(),
+            identity: SourceIdentity::Named(Arc::clone(&name)),
+            name,
             text: text.into(),
+        }
+    }
+
+    /// Create a file source using a stable path, typically a canonical absolute path.
+    pub fn from_path(path: PathBuf, text: impl Into<String>) -> Self {
+        Self {
+            name: Arc::from(path.to_string_lossy().as_ref()),
+            text: text.into(),
+            identity: SourceIdentity::File(path),
+        }
+    }
+
+    /// Get the original path, including any bytes outside UTF-8.
+    pub fn path(&self) -> Option<&Path> {
+        match &self.identity {
+            SourceIdentity::File(path) => Some(path),
+            _ => None,
         }
     }
 }
@@ -143,10 +172,29 @@ pub struct RunOptions {
     pub check_contracts: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SourceOrigin {
+    Program,
+    Builtin,
+    LibraryHeader(Arc<str>),
+    LibraryImplementation(Arc<str>),
+}
+
+impl SourceOrigin {
+    fn library(&self) -> Option<&str> {
+        match self {
+            Self::LibraryHeader(name) | Self::LibraryImplementation(name) => Some(name),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Loader {
     sources: Vec<Arc<str>>,
-    loaded_sources: HashSet<Arc<str>>,
+    origins: Vec<Vec<SourceOrigin>>,
+    include_edges: Vec<Vec<usize>>,
+    loaded_sources: HashMap<SourceIdentity, usize>,
     loaded_libraries: HashSet<String>,
     aliases: HashMap<String, Type>,
     declarations: Vec<Declaration>,
@@ -155,6 +203,7 @@ struct Loader {
 /// Parsed C0 source units, in declaration order.
 pub struct ParsedProgram {
     sources: Vec<Arc<str>>,
+    origins: Vec<Vec<SourceOrigin>>,
     declarations: Vec<Declaration>,
 }
 
@@ -171,13 +220,14 @@ pub fn parse(
             loader.library(library, Location::start(0), resolver)?;
         }
         for source in sources {
-            loader.source(source, false, resolver)?;
+            loader.source(source, SourceOrigin::Program, resolver)?;
         }
         Ok(())
     })();
     result.map_err(|error: Diagnostic| error.in_sources(&loader.sources))?;
     Ok(ParsedProgram {
         sources: loader.sources,
+        origins: loader.origins,
         declarations: loader.declarations,
     })
 }
@@ -186,14 +236,19 @@ impl Loader {
     fn source(
         &mut self,
         source: Source,
-        native: bool,
+        origin: SourceOrigin,
         resolver: &mut impl SourceResolver,
-    ) -> Result<(), Diagnostic> {
-        if !self.loaded_sources.insert(Arc::clone(&source.name)) {
-            return Ok(());
+    ) -> Result<usize, Diagnostic> {
+        if let Some(&source_id) = self.loaded_sources.get(&source.identity) {
+            self.assign_origin(source_id, &origin);
+            return Ok(source_id);
         }
         let source_id = self.sources.len();
+        self.loaded_sources
+            .insert(source.identity.clone(), source_id);
         self.sources.push(Arc::clone(&source.name));
+        self.origins.push(vec![origin]);
+        self.include_edges.push(Vec::new());
         let mut tokens = lexer::lex(&source.text, source_id)
             .map_err(|error| error.with_kind(DiagnosticKind::Syntax))?
             .into_iter()
@@ -206,12 +261,17 @@ impl Loader {
         }) {
             match token.kind {
                 TokenKind::Import(Import::Source(path)) => {
-                    let imported = resolver.source(&source.name, &path).map_err(|error| {
+                    let imported = resolver.source_from(&source, &path).map_err(|error| {
                         token
                             .location
                             .error(format!("could not load '{path}': {error}"))
                     })?;
-                    self.source(imported, native, resolver)?;
+                    let target =
+                        self.source(imported, self.origins[source_id][0].clone(), resolver)?;
+                    self.include_edges[source_id].push(target);
+                    for origin in self.origins[source_id].clone() {
+                        self.assign_origin(target, &origin);
+                    }
                 }
                 TokenKind::Import(Import::Library(name)) => {
                     self.library(&name, token.location, resolver)?;
@@ -220,10 +280,22 @@ impl Loader {
                 _ => unreachable!("import token"),
             }
         }
+        let native = self.origins[source_id].contains(&SourceOrigin::Builtin);
         let declarations = parser::parse(tokens, &mut self.aliases, native)
             .map_err(|error| error.with_kind(DiagnosticKind::Syntax))?;
         self.declarations.extend(declarations);
-        Ok(())
+        Ok(source_id)
+    }
+
+    fn assign_origin(&mut self, source_id: usize, origin: &SourceOrigin) {
+        // A file can already have been loaded through a root or a shared include.
+        let mut pending = vec![source_id];
+        while let Some(source_id) = pending.pop() {
+            if !self.origins[source_id].contains(origin) {
+                self.origins[source_id].push(origin.clone());
+                pending.extend_from_slice(&self.include_edges[source_id]);
+            }
+        }
     }
 
     fn library(
@@ -236,14 +308,25 @@ impl Loader {
             return Ok(());
         }
         if let Some(header) = libraries::header(name) {
-            return self.source(Source::new(format!("<{name}>"), header), true, resolver);
+            let source = Source {
+                name: Arc::from(format!("<{name}>")),
+                text: header.to_owned(),
+                identity: SourceIdentity::Builtin(name.to_owned()),
+            };
+            self.source(source, SourceOrigin::Builtin, resolver)?;
+            return Ok(());
         }
         let library = resolver
             .library(name)
             .map_err(|error| location.error(format!("could not load library '{name}': {error}")))?;
-        self.source(library.header, false, resolver)?;
+        let name: Arc<str> = Arc::from(name);
+        self.source(
+            library.header,
+            SourceOrigin::LibraryHeader(Arc::clone(&name)),
+            resolver,
+        )?;
         if let Some(source) = library.implementation {
-            self.source(source, false, resolver)?;
+            self.source(source, SourceOrigin::LibraryImplementation(name), resolver)?;
         }
         Ok(())
     }
@@ -252,7 +335,7 @@ impl Loader {
 impl ParsedProgram {
     /// Validate the sequenced declarations and produce an executable program.
     pub fn check(&self, options: CheckOptions) -> Result<CheckedProgram<'_>, Diagnostic> {
-        let checked = check::validate(&self.declarations, options)
+        let checked = check::validate(&self.declarations, &self.origins, options)
             .map_err(|error| error.in_sources(&self.sources))?;
         Ok(CheckedProgram {
             parsed: self,

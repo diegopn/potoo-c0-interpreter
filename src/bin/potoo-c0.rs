@@ -114,7 +114,7 @@ fn run() -> Result<(), String> {
 fn read_source(path: &Path) -> io::Result<Source> {
     let path = path.canonicalize()?;
     let text = fs::read_to_string(&path)?;
-    Ok(Source::new(path.to_string_lossy().as_ref(), text))
+    Ok(Source::from_path(path, text))
 }
 
 struct Files {
@@ -122,8 +122,11 @@ struct Files {
 }
 
 impl SourceResolver for Files {
-    fn source(&mut self, from: &str, path: &str) -> io::Result<Source> {
-        let from = Path::new(from).parent().unwrap_or_else(|| Path::new("."));
+    fn source_from(&mut self, from: &Source, path: &str) -> io::Result<Source> {
+        let from = from
+            .path()
+            .and_then(Path::parent)
+            .unwrap_or_else(|| Path::new("."));
         read_source(&from.join(path))
     }
 

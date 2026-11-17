@@ -165,24 +165,37 @@ pub(crate) fn format_types(
     Ok(types)
 }
 
-fn formatted(args: &[Value], location: Location) -> Result<Vec<u8>, Diagnostic> {
+fn formatted(name: &str, args: &[Value], location: Location) -> Result<Vec<u8>, Diagnostic> {
+    let invalid = || invalid_arguments(name, location);
     let Some((Value::String(format), args)) = args.split_first() else {
-        unreachable!("validated format arguments");
+        return Err(invalid());
     };
     let mut args = args.iter();
     let mut output = Vec::new();
     for part in format_parts(format, location)? {
-        match part {
-            FormatPart::Text(text) => output.extend_from_slice(text),
-            _ => match args.next().expect("validated format argument") {
-                Value::Int(value) => output.extend_from_slice(value.to_string().as_bytes()),
-                Value::Char(value) => output.push(*value),
-                Value::String(value) => output.extend_from_slice(value),
-                _ => unreachable!("validated format value"),
-            },
+        if let FormatPart::Text(text) = part {
+            output.extend_from_slice(text);
+            continue;
+        }
+        match (part, args.next()) {
+            (FormatPart::Int, Some(Value::Int(value))) => {
+                output.extend_from_slice(value.to_string().as_bytes());
+            }
+            (FormatPart::Char, Some(Value::Char(value))) => {
+                output.push(ascii_char(*value, location)?);
+            }
+            (FormatPart::String, Some(Value::String(value))) => output.extend_from_slice(value),
+            _ => return Err(invalid()),
         }
     }
+    if args.next().is_some() {
+        return Err(invalid());
+    }
     Ok(output)
+}
+
+fn invalid_arguments(name: &str, location: Location) -> Diagnostic {
+    location.error(format!("invalid arguments for native function '{name}'"))
 }
 
 #[derive(Default)]
@@ -236,23 +249,24 @@ impl Resources {
                 Value::Void
             }
             ("printchar", [Value::Char(value)]) => {
-                host.write(&[*value]).map_err(io_error)?;
+                host.write(&[ascii_char(*value, location)?])
+                    .map_err(io_error)?;
                 Value::Void
             }
             ("printf", args) => {
-                host.write(&formatted(args, location)?).map_err(io_error)?;
+                host.write(&formatted(name, args, location)?)
+                    .map_err(io_error)?;
                 Value::Void
             }
-            ("format", args) => Value::string(without_nul(formatted(args, location)?)),
+            ("format", args) => Value::string(without_nul(formatted(name, args, location)?)),
             ("flush", []) => {
                 host.flush().map_err(io_error)?;
                 Value::Void
             }
             ("readline", []) => {
                 host.flush().map_err(io_error)?;
-                Value::string(without_nul(
-                    host.read_line().map_err(io_error)?.unwrap_or_default(),
-                ))
+                let input = host.read_line().map_err(io_error)?.unwrap_or_default();
+                Value::string(host_text(input, location)?)
             }
             ("eof", []) => Value::Bool(host.input_eof().map_err(io_error)?),
             ("file_read", [Value::String(path)]) => {
@@ -289,7 +303,7 @@ impl Resources {
                     .read_until(b'\n', &mut line)
                     .map_err(io_error)?;
                 trim_line_ending(&mut line);
-                Value::string(without_nul(line))
+                Value::string(host_text(line, location)?)
             }
             (
                 form @ ("args_flag" | "args_int" | "args_string"),
@@ -391,6 +405,10 @@ impl Resources {
         heap: &mut Heap,
         location: Location,
     ) -> Result<Value, Diagnostic> {
+        let command_line = command_line
+            .into_iter()
+            .map(|bytes| host_text(bytes, location))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut command_line = command_line.into_iter();
         let mut positional = Vec::new();
         while let Some(name) = command_line.next() {
@@ -401,14 +419,14 @@ impl Resources {
                         .next()
                         .and_then(|value| integer(&value, 10))
                         .map(Value::Int),
-                    ArgumentKind::String => command_line.next().map(without_nul).map(Value::string),
+                    ArgumentKind::String => command_line.next().map(Value::string),
                 };
                 let Some(value) = value else {
                     return Ok(Value::Pointer(None));
                 };
                 destination.borrow_mut()[0] = value;
             } else {
-                positional.push(Value::string(without_nul(name)));
+                positional.push(Value::string(name));
             }
         }
         let argc = length(positional.len(), location)?;
@@ -430,7 +448,7 @@ fn strings(
             let character = text
                 .get(*index as usize)
                 .ok_or_else(|| location.error("character index out of bounds"))?;
-            Value::Char(*character)
+            Value::Char(ascii_char(*character, location)?)
         }
         ("string_join", [Value::String(left), Value::String(right)]) => {
             Value::string([left.as_ref(), right.as_ref()].concat())
@@ -454,7 +472,12 @@ fn strings(
         }),
         ("string_tolower", [Value::String(text)]) => Value::string(text.to_ascii_lowercase()),
         ("string_to_chararray", [Value::String(text)]) => {
-            let chars = text.iter().copied().chain([0]).map(Value::Char).collect();
+            let chars = text
+                .iter()
+                .copied()
+                .chain([0])
+                .map(|byte| ascii_char(byte, location).map(Value::Char))
+                .collect::<Result<_, _>>()?;
             Value::Array(Some(heap.block(chars)))
         }
         ("string_from_chararray", [Value::Array(array)]) => {
@@ -470,11 +493,11 @@ fn strings(
                 .iter()
                 .map(|value| {
                     let Value::Char(character) = value else {
-                        unreachable!("validated char[]")
+                        return Err(invalid_arguments(name, location));
                     };
-                    *character
+                    ascii_char(*character, location)
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
             Value::string(text)
         }
         ("string_terminated", [Value::Array(array), Value::Int(limit)]) => {
@@ -489,14 +512,16 @@ fn strings(
                     .any(|value| matches!(value, Value::Char(0)))
             }))
         }
-        ("char_ord", [Value::Char(character)]) => Value::Int(i32::from(*character)),
+        ("char_ord", [Value::Char(character)]) => {
+            Value::Int(i32::from(ascii_char(*character, location)?))
+        }
         ("char_chr", [Value::Int(number)]) => {
             if !(0..=127).contains(number) {
                 return Err(location.error("character code must be between 0 and 127"));
             }
             Value::Char(*number as u8)
         }
-        _ => unreachable!("validated library call '{name}'"),
+        _ => return Err(invalid_arguments(name, location)),
     })
 }
 
@@ -537,6 +562,9 @@ fn integer(text: &[u8], base: u32) -> Option<i32> {
     } else {
         digits
     };
+    if digits.is_empty() || !digits.chars().all(|digit| digit.is_digit(base)) {
+        return None;
+    }
     let magnitude = u32::from_str_radix(digits, base).ok()?;
     match (negative, base) {
         (true, _) if magnitude <= 1 << 31 => Some(magnitude.cast_signed().wrapping_neg()),
@@ -562,16 +590,34 @@ fn without_nul(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
+fn host_text(bytes: Vec<u8>, location: Location) -> Result<Vec<u8>, Diagnostic> {
+    let text = without_nul(bytes);
+    if text.is_ascii() {
+        Ok(text)
+    } else {
+        Err(location.error("C0 text input must be ASCII"))
+    }
+}
+
+fn ascii_char(byte: u8, location: Location) -> Result<u8, Diagnostic> {
+    if byte.is_ascii() {
+        Ok(byte)
+    } else {
+        Err(location.error("character code must be between 0 and 127"))
+    }
+}
+
 fn pointer(heap: &mut Heap, value: Option<Value>) -> Value {
     Value::Pointer(value.map(|value| heap.block(vec![value])))
 }
 
 fn resource_id(value: &Value, location: Location) -> Result<usize, Diagnostic> {
-    let Value::Pointer(Some(memory)) = value else {
-        return Err(location.error("resource handle is NULL"));
-    };
-    let Value::Resource(id) = memory.borrow()[0] else {
-        unreachable!("validated opaque resource type");
-    };
-    Ok(id)
+    match value {
+        Value::Pointer(None) => Err(location.error("resource handle is NULL")),
+        Value::Pointer(Some(memory)) => match memory.borrow().first() {
+            Some(Value::Resource(id)) => Ok(*id),
+            _ => Err(location.error("invalid native resource handle")),
+        },
+        _ => Err(location.error("invalid native resource handle")),
+    }
 }

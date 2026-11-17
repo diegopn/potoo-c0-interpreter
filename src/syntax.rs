@@ -68,7 +68,6 @@ pub(crate) enum Declaration {
         location: Location,
         name: String,
         fields: Option<Vec<Binding>>,
-        native: bool,
     },
     Alias(Binding),
 }

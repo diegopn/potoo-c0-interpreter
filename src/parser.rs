@@ -162,7 +162,6 @@ impl Parser<'_> {
                     location,
                     name: name.clone(),
                     fields,
-                    native,
                 });
                 continue;
             }
