@@ -47,7 +47,18 @@ pub(crate) fn validate(
     let mut checker = Checker {
         signatures: HashMap::new(),
         structures: HashMap::new(),
-        opaque: HashSet::new(),
+        opaque: declarations
+            .iter()
+            .filter_map(|declaration| match declaration {
+                Declaration::Struct {
+                    name,
+                    fields: None,
+                    native: true,
+                    ..
+                } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect(),
         aliases: HashSet::new(),
         referenced: Vec::new(),
         annotation_calls: Vec::new(),
@@ -95,11 +106,12 @@ pub(crate) fn validate(
             Declaration::Struct {
                 location,
                 name,
-                fields,
-                native,
+                fields: Some(fields),
+                ..
             } => {
-                checker.structure(*location, name, fields.as_deref(), *native)?;
+                checker.structure(*location, name, fields)?;
             }
+            Declaration::Struct { fields: None, .. } => {}
             Declaration::Alias(alias) => {
                 well_formed_type(&alias.ty, false, alias.location)?;
                 if checker.signatures.contains_key(alias.name.as_str()) {
@@ -266,29 +278,25 @@ impl<'a> Checker<'a> {
         &mut self,
         location: Location,
         name: &'a str,
-        fields: Option<&'a [Binding]>,
-        native: bool,
+        fields: &'a [Binding],
     ) -> Result<(), Diagnostic> {
-        if let Some(fields) = fields {
-            if self.structures.contains_key(name) || self.opaque.contains(name) {
-                return Err(location.error(format!(
-                    "struct '{name}' is already defined or belongs to a library"
-                )));
-            }
-            let mut names = HashSet::new();
-            for field in fields {
-                well_formed_type(&field.ty, false, field.location)?;
-                self.require_layout(&field.ty, field.location)?;
-                if !names.insert(&field.name) {
-                    return Err(field
-                        .location
-                        .error(format!("field '{}' is declared twice", field.name)));
-                }
-            }
-            self.structures.insert(name, fields);
-        } else if native {
-            self.opaque.insert(name);
+        if self.opaque.contains(name) {
+            return Err(location.error(format!("struct '{name}' is opaque in a library")));
         }
+        if self.structures.contains_key(name) {
+            return Err(location.error(format!("struct '{name}' is already defined")));
+        }
+        let mut names = HashSet::new();
+        for field in fields {
+            well_formed_type(&field.ty, false, field.location)?;
+            self.require_layout(&field.ty, field.location)?;
+            if !names.insert(&field.name) {
+                return Err(field
+                    .location
+                    .error(format!("field '{}' is declared twice", field.name)));
+            }
+        }
+        self.structures.insert(name, fields);
         Ok(())
     }
 

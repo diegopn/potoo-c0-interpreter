@@ -114,7 +114,7 @@ impl Lexer<'_> {
                 '\\' if end.is_some() => self.contract_word(location)?,
                 '0'..='9' => self.number(location)?,
                 '"' | '\'' => self.literal(ch, location)?,
-                'a'..='z' | 'A'..='Z' | '_' => self.word(end.is_some()),
+                'a'..='z' | 'A'..='Z' | '_' => self.word(),
                 _ => self.symbol(location)?,
             };
             tokens.push(Token { location, kind });
@@ -255,7 +255,7 @@ impl Lexer<'_> {
         })
     }
 
-    fn word(&mut self, annotation: bool) -> TokenKind {
+    fn word(&mut self) -> TokenKind {
         let word = self.take_while(|ch| ch.is_ascii_alphanumeric() || ch == '_');
         match word {
             "int" => TokenKind::Type(Type::Int),
@@ -271,9 +271,6 @@ impl Lexer<'_> {
             "for" => TokenKind::Symbol("for"),
             "return" => TokenKind::Symbol("return"),
             "assert" => TokenKind::Symbol("assert"),
-            "requires" if annotation => TokenKind::Symbol("requires"),
-            "ensures" if annotation => TokenKind::Symbol("ensures"),
-            "loop_invariant" if annotation => TokenKind::Symbol("loop_invariant"),
             "error" => TokenKind::Symbol("error"),
             "break" => TokenKind::Symbol("break"),
             "continue" => TokenKind::Symbol("continue"),

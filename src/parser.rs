@@ -207,19 +207,20 @@ impl Parser<'_> {
             };
             while !matches!(parser.current().kind, TokenKind::End) {
                 let location = parser.current().location;
-                let kind = if parser.consume("assert") {
-                    ContractKind::Assert
-                } else if parser.consume("requires") {
-                    ContractKind::Requires
-                } else if parser.consume("ensures") {
-                    ContractKind::Ensures
-                } else if parser.consume("loop_invariant") {
-                    ContractKind::Invariant
-                } else {
-                    return Err(
-                        location.error("expected requires, ensures, loop_invariant, or assert")
-                    );
+                let kind = match &parser.current().kind {
+                    TokenKind::Symbol("assert") => ContractKind::Assert,
+                    TokenKind::Identifier(marker) if marker == "requires" => ContractKind::Requires,
+                    TokenKind::Identifier(marker) if marker == "ensures" => ContractKind::Ensures,
+                    TokenKind::Identifier(marker) if marker == "loop_invariant" => {
+                        ContractKind::Invariant
+                    }
+                    _ => {
+                        return Err(
+                            location.error("expected requires, ensures, loop_invariant, or assert")
+                        );
+                    }
                 };
+                parser.tokens.next();
                 annotations.push(Contract {
                     kind,
                     expression: parser.expression(0)?,
