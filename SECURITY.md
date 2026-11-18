@@ -14,4 +14,4 @@ For non-security issues, see [CONTRIBUTING.md](CONTRIBUTING.md). For conduct con
 
 ## Security boundaries
 
-The repository currently contains only a crate scaffold and does not execute C0 source. This policy will be updated with the runtime boundaries and resource limits before source execution is implemented. When execution is introduced, hosts running untrusted source should apply process isolation; resource limits alone are not an operating-system sandbox.
+C0 source runs in the process that calls the interpreter. The crate does not create an operating-system sandbox or enforce general CPU or memory quotas. The standalone CLI and `RuntimeHost` may provide console, argument, file, image, and terminal services; those services use the permissions of the host process. The crate does not load arbitrary native C ABI libraries. Call-depth and other implementation guards do not isolate a program from its host. For untrusted source, expose only required host services and run it in a restricted process with operating-system access and resource limits.
