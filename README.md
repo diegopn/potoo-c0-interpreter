@@ -46,16 +46,16 @@ int main() {
 
 ### Install from source
 
-Install Rust 1.93 or later, then install the CLI from the `develop` branch:
+Install Rust 1.93 or later, then install the CLI from the stable `main` branch:
 
 ```sh
-cargo install --git https://github.com/diegopn/potoo-c0-interpreter.git --branch develop --locked --bin potoo-c0
+cargo install --git https://github.com/diegopn/potoo-c0-interpreter.git --branch main --locked --bin potoo-c0
 ```
 
 Alternatively, clone the repository and install the checked-out source:
 
 ```sh
-git clone --branch develop https://github.com/diegopn/potoo-c0-interpreter.git
+git clone --branch main https://github.com/diegopn/potoo-c0-interpreter.git
 cd potoo-c0-interpreter
 cargo install --path . --locked --bin potoo-c0
 ```
@@ -82,13 +82,23 @@ The executable invokes `int main()`, prints the returned integer, and exits succ
 
 Source and runtime failures are written to standard error with source locations when available, and the CLI exits unsuccessfully.
 
+### Prebuilt binaries
+
+The [latest release](https://github.com/diegopn/potoo-c0-interpreter/releases/latest) provides these CLI archives:
+
+- Linux x86_64 (GNU): `potoo-c0-interpreter-v<version>-x86_64-unknown-linux-gnu.tar.gz`
+- Windows x86_64 (MSVC): `potoo-c0-interpreter-v<version>-x86_64-pc-windows-msvc.zip`
+- macOS Intel x86_64: `potoo-c0-interpreter-v<version>-x86_64-apple-darwin.tar.gz`
+
+Each archive contains the `potoo-c0` executable (named `potoo-c0.exe` on Windows). `SHA256SUMS` is published with the archives. The macOS build targets Intel; Apple silicon is not included.
+
 ## Use as a Rust library
 
 Add the crate to a Rust application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-potoo-c0-interpreter = { git = "https://github.com/diegopn/potoo-c0-interpreter.git", branch = "develop" }
+potoo-c0-interpreter = { git = "https://github.com/diegopn/potoo-c0-interpreter.git", branch = "main" }
 ```
 
 Use `run` for a source program that only needs console output:
