@@ -268,9 +268,9 @@ impl Parser<'_> {
             }
         } else if self.consume("if") {
             let condition = self.parenthesized()?;
-            let then_branch = Box::new(self.statement(false)?);
+            let then_branch = Box::new(self.statement(true)?);
             let else_branch = if self.consume("else") {
-                Some(Box::new(self.statement(false)?))
+                Some(Box::new(self.statement(true)?))
             } else {
                 None
             };
@@ -282,7 +282,7 @@ impl Parser<'_> {
                 initializer: None,
                 condition,
                 step: None,
-                body: Box::new(self.statement(false)?),
+                body: Box::new(self.statement(true)?),
                 invariants,
             }
         } else if self.consume("for") {
@@ -296,7 +296,7 @@ impl Parser<'_> {
                 initializer,
                 condition,
                 step,
-                body: Box::new(self.statement(false)?),
+                body: Box::new(self.statement(true)?),
                 invariants,
             }
         } else if self.consume("return") {

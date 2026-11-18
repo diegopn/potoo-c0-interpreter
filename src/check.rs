@@ -746,7 +746,7 @@ impl<'a> Checker<'a> {
             StatementKind::Block(statements) => {
                 let mut scoped = variables.clone();
                 let falls_through = self.block(statements, &mut scoped)?;
-                for (name, variable) in variables {
+                for (name, variable) in variables.iter_mut() {
                     variable.initialized = scoped[name].initialized;
                 }
                 return Ok(falls_through);
@@ -805,13 +805,50 @@ impl<'a> Checker<'a> {
                 let mut yes_variables = variables.clone();
                 let mut no_variables = variables.clone();
                 let yes_continues = self.statement(yes, &mut yes_variables)?;
+                for (&name, variable) in &yes_variables {
+                    if !variables.contains_key(name) {
+                        no_variables.insert(
+                            name,
+                            Variable {
+                                ty: variable.ty,
+                                initialized: false,
+                            },
+                        );
+                    }
+                }
                 let no_continues = match no {
                     Some(no) => self.statement(no, &mut no_variables)?,
                     None => true,
                 };
-                for (name, variable) in variables {
+                for (name, variable) in variables.iter_mut() {
                     variable.initialized = (!yes_continues || yes_variables[name].initialized)
                         && (!no_continues || no_variables[name].initialized);
+                }
+                for name in yes_variables
+                    .keys()
+                    .chain(no_variables.keys())
+                    .copied()
+                    .filter(|name| !variables.contains_key(name))
+                    .collect::<HashSet<_>>()
+                {
+                    let variable = yes_variables
+                        .get(name)
+                        .or_else(|| no_variables.get(name))
+                        .expect("branch variable exists");
+                    let yes_initialized = yes_variables
+                        .get(name)
+                        .is_some_and(|variable| variable.initialized);
+                    let no_initialized = no_variables
+                        .get(name)
+                        .is_some_and(|variable| variable.initialized);
+                    variables.insert(
+                        name,
+                        Variable {
+                            ty: variable.ty,
+                            initialized: (!yes_continues || yes_initialized)
+                                && (!no_continues || no_initialized),
+                        },
+                    );
                 }
                 return Ok(yes_continues || no_continues);
             }
@@ -827,7 +864,7 @@ impl<'a> Checker<'a> {
                     self.statement(initializer, &mut scoped)?;
                 }
                 self.expect_expression(condition, &Type::Bool, &scoped)?;
-                for (name, variable) in variables {
+                for (name, variable) in variables.iter_mut() {
                     variable.initialized = scoped[name].initialized;
                 }
                 self.contracts(
@@ -835,14 +872,30 @@ impl<'a> Checker<'a> {
                     &scoped,
                     &[ContractKind::Invariant, ContractKind::Assert],
                 )?;
+                let mut step_variables = scoped.clone();
                 let continues = self.statement(body, &mut scoped)?;
                 if let Some(step) = step {
-                    if !continues {
-                        scoped
+                    if continues {
+                        for (name, variable) in &mut step_variables {
+                            variable.initialized = scoped[name].initialized;
+                        }
+                    } else {
+                        step_variables
                             .values_mut()
                             .for_each(|variable| variable.initialized = true);
                     }
-                    self.statement(step, &mut scoped)?;
+                    self.statement(step, &mut step_variables)?;
+                }
+                for (name, variable) in scoped {
+                    if !step_variables.contains_key(name) && !variables.contains_key(name) {
+                        variables.insert(
+                            name,
+                            Variable {
+                                ty: variable.ty,
+                                initialized: false,
+                            },
+                        );
+                    }
                 }
             }
             StatementKind::Contracts(contracts) => {

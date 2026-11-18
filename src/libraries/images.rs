@@ -119,9 +119,6 @@ impl Resources {
             )?,
             ("image_load", [Value::String(path)]) => match host.load_image(path) {
                 Ok(image) => image,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(Value::Pointer(None));
-                }
                 Err(error) => return Err(io_error(error)),
             },
             ("image_save", [image, Value::String(path)]) => {

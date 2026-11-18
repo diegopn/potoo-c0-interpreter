@@ -8,7 +8,7 @@ use super::{invalid_arguments, pointer};
 pub(super) const RAND: &str = "
     struct rand;
     typedef struct rand* rand_t;
-    rand_t init_rand(int seed) /*@requires seed != 0; @*/ ;
+    rand_t init_rand(int seed);
     int rand(rand_t generator);
 ";
 

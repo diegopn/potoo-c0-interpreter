@@ -272,9 +272,6 @@ impl Resources {
             ("file_read", [Value::String(path)]) => {
                 let reader = match host.open_file(path) {
                     Ok(reader) => reader,
-                    Err(error) if error.kind() != std::io::ErrorKind::Unsupported => {
-                        return Ok(Value::Pointer(None));
-                    }
                     Err(error) => return Err(io_error(error)),
                 };
                 let (id, value) = self.resource(heap);
@@ -421,10 +418,9 @@ impl Resources {
                         .map(Value::Int),
                     ArgumentKind::String => command_line.next().map(Value::string),
                 };
-                let Some(value) = value else {
-                    return Ok(Value::Pointer(None));
-                };
-                destination.borrow_mut()[0] = value;
+                if let Some(value) = value {
+                    destination.borrow_mut()[0] = value;
+                }
             } else {
                 positional.push(Value::string(name));
             }

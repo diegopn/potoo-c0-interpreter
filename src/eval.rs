@@ -16,6 +16,7 @@ type Scope = HashMap<String, Option<Value>>;
 
 struct Frame {
     scopes: Vec<Scope>,
+    declaration_scope: usize,
     result: Option<Value>,
 }
 
@@ -29,6 +30,7 @@ impl Frame {
             .collect();
         Self {
             scopes: vec![parameters],
+            declaration_scope: 0,
             result: None,
         }
     }
@@ -49,6 +51,39 @@ impl Frame {
             .find_map(|scope| scope.get_mut(name))
             .expect("validated variable");
         *variable = Some(value);
+    }
+
+    fn prepare_scope(&mut self, statements: &[Statement]) {
+        fn declarations(statement: &Statement, names: &mut Vec<String>) {
+            match &statement.kind {
+                StatementKind::Block(_) => {}
+                StatementKind::Declare(binding, _) => names.push(binding.name.clone()),
+                StatementKind::If(_, yes, no) => {
+                    declarations(yes, names);
+                    if let Some(no) = no {
+                        declarations(no, names);
+                    }
+                }
+                StatementKind::Loop { body, .. } | StatementKind::Guard(_, body) => {
+                    declarations(body, names);
+                }
+                StatementKind::Assign(_, _, _)
+                | StatementKind::Expression(_)
+                | StatementKind::Contracts(_)
+                | StatementKind::Return(_)
+                | StatementKind::Assert(_)
+                | StatementKind::Error(_) => {}
+            }
+        }
+
+        let mut names = Vec::new();
+        for statement in statements {
+            declarations(statement, &mut names);
+        }
+        let scope = &mut self.scopes[self.declaration_scope];
+        for name in names {
+            scope.entry(name).or_insert(None);
+        }
     }
 }
 
@@ -462,6 +497,7 @@ impl<'a, H: RuntimeHost> Evaluator<'a, '_, H> {
         statements: &[Statement],
         frame: &mut Frame,
     ) -> Result<Option<Value>, Diagnostic> {
+        frame.prepare_scope(statements);
         for statement in statements {
             if let Some(value) = self.statement(statement, frame)? {
                 return Ok(Some(value));
@@ -479,8 +515,11 @@ impl<'a, H: RuntimeHost> Evaluator<'a, '_, H> {
         self.event(DebugEventKind::Statement, location)?;
         match &statement.kind {
             StatementKind::Block(statements) => {
+                let declaration_scope = frame.declaration_scope;
                 frame.scopes.push(HashMap::new());
+                frame.declaration_scope = frame.scopes.len() - 1;
                 let result = self.block(statements, frame);
+                frame.declaration_scope = declaration_scope;
                 frame.scopes.pop();
                 return result;
             }
@@ -489,11 +528,7 @@ impl<'a, H: RuntimeHost> Evaluator<'a, '_, H> {
                     .as_ref()
                     .map(|expression| self.expression(expression, frame))
                     .transpose()?;
-                frame
-                    .scopes
-                    .last_mut()
-                    .expect("active scope")
-                    .insert(binding.name.clone(), value);
+                frame.scopes[frame.declaration_scope].insert(binding.name.clone(), value);
             }
             StatementKind::Assign(target, operator, expression) => {
                 let destination = self.place(target, frame)?;
@@ -522,16 +557,29 @@ impl<'a, H: RuntimeHost> Evaluator<'a, '_, H> {
                 body,
                 invariants,
             } => {
-                frame.scopes.push(HashMap::new());
-                let result = self.loop_body(
-                    initializer.as_deref(),
-                    condition,
-                    step.as_deref(),
-                    body,
-                    invariants,
-                    frame,
-                );
-                frame.scopes.pop();
+                let declaration_scope = frame.declaration_scope;
+                let initializer_scope = initializer.as_ref().is_some_and(|initializer| {
+                    matches!(initializer.kind, StatementKind::Declare(_, _))
+                });
+                if initializer_scope {
+                    frame.scopes.push(HashMap::new());
+                    frame.declaration_scope = frame.scopes.len() - 1;
+                }
+                let initialized = initializer
+                    .as_deref()
+                    .map(|initializer| self.statement(initializer, frame))
+                    .transpose();
+                frame.declaration_scope = declaration_scope;
+                let result = match initialized {
+                    Ok(Some(Some(value))) => Ok(Some(value)),
+                    Ok(Some(None)) | Ok(None) => {
+                        self.loop_body(condition, step.as_deref(), body, invariants, frame)
+                    }
+                    Err(error) => Err(error),
+                };
+                if initializer_scope {
+                    frame.scopes.pop();
+                }
                 return result;
             }
             StatementKind::Guard(contracts, statement) => {
@@ -572,16 +620,12 @@ impl<'a, H: RuntimeHost> Evaluator<'a, '_, H> {
 
     fn loop_body(
         &mut self,
-        initializer: Option<&Statement>,
         condition: &Expression,
         step: Option<&Statement>,
         body: &Statement,
         invariants: &[Contract],
         frame: &mut Frame,
     ) -> Result<Option<Value>, Diagnostic> {
-        if let Some(initializer) = initializer {
-            self.statement(initializer, frame)?;
-        }
         loop {
             self.event(DebugEventKind::LoopCondition, condition.location)?;
             for invariant in invariants
