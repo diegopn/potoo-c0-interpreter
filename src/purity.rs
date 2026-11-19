@@ -27,7 +27,17 @@ pub(crate) fn validate(
                 definition.body.as_deref().expect("definition"),
                 &mut HashSet::new(),
             );
-        } else if matches!(name, "args_parse" | "rand" | "image_destroy") {
+        } else if matches!(
+            name,
+            "args_flag"
+                | "args_int"
+                | "args_string"
+                | "args_parse"
+                | "rand"
+                | "file_close"
+                | "file_readline"
+                | "image_destroy"
+        ) {
             effect.writes_existing_memory = true;
         }
         effects.insert(name, effect);
