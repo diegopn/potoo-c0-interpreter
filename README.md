@@ -91,6 +91,7 @@ The CLI's image file support uses FFmpeg. Other language features do not require
 #### Linux x86_64 (GNU)
 
 ```sh
+set -euo pipefail
 asset="potoo-c0-interpreter-v0.1.1-x86_64-unknown-linux-gnu.tar.gz"
 grep -F "  $asset" SHA256SUMS | sha256sum --check -
 tar -xzf "$asset"
@@ -123,6 +124,7 @@ To run `potoo-c0.exe` from any folder, add `$env:USERPROFILE\.local\bin\potoo-c0
 #### Intel macOS x86_64
 
 ```sh
+set -euo pipefail
 asset="potoo-c0-interpreter-v0.1.1-x86_64-apple-darwin.tar.gz"
 grep -F "  $asset" SHA256SUMS | shasum -a 256 -c -
 tar -xzf "$asset"
@@ -135,6 +137,7 @@ potoo-c0 hello.c0
 #### Apple silicon macOS arm64
 
 ```sh
+set -euo pipefail
 asset="potoo-c0-interpreter-v0.1.1-aarch64-apple-darwin.tar.gz"
 grep -F "  $asset" SHA256SUMS | shasum -a 256 -c -
 tar -xzf "$asset"
