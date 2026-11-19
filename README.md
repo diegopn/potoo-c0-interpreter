@@ -82,15 +82,69 @@ The executable invokes `int main()`, prints the returned integer, and exits succ
 
 Source and runtime failures are written to standard error with source locations when available, and the CLI exits unsuccessfully.
 
-### Prebuilt binaries
+### Install prebuilt binaries
 
-The [latest release](https://github.com/diegopn/potoo-c0-interpreter/releases/latest) provides these CLI archives:
+The v0.1.1 release provides native CLI packages for Linux x86_64 (GNU), Windows x86_64 (MSVC), Intel macOS x86_64, and Apple silicon macOS arm64. Download your platform's archive and `SHA256SUMS` from the [latest release](https://github.com/diegopn/potoo-c0-interpreter/releases/latest), then run the commands below from the folder containing both files. Each archive contains `potoo-c0` (or `potoo-c0.exe` on Windows) and the repository license. The release package does not include `hello.c0`; use the sample from [Source example](#source-example) or your own C0 file.
 
-- Linux x86_64 (GNU): `potoo-c0-interpreter-v<version>-x86_64-unknown-linux-gnu.tar.gz`
-- Windows x86_64 (MSVC): `potoo-c0-interpreter-v<version>-x86_64-pc-windows-msvc.zip`
-- macOS Intel x86_64: `potoo-c0-interpreter-v<version>-x86_64-apple-darwin.tar.gz`
+The CLI's image file support uses FFmpeg. Other language features do not require image decoding or encoding.
 
-Each archive contains the `potoo-c0` executable (named `potoo-c0.exe` on Windows). `SHA256SUMS` is published with the archives. The macOS build targets Intel; Apple silicon is not included.
+#### Linux x86_64 (GNU)
+
+```sh
+asset="potoo-c0-interpreter-v0.1.1-x86_64-unknown-linux-gnu.tar.gz"
+grep -F "  $asset" SHA256SUMS | sha256sum --check -
+tar -xzf "$asset"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "${asset%.tar.gz}/potoo-c0" "$HOME/.local/bin/potoo-c0"
+export PATH="$HOME/.local/bin:$PATH"
+potoo-c0 hello.c0
+```
+
+To keep the command available in new Linux sessions, add the `export PATH="$HOME/.local/bin:$PATH"` line to your shell profile.
+
+#### Windows x86_64 (MSVC, PowerShell)
+
+```powershell
+$archive = "potoo-c0-interpreter-v0.1.1-x86_64-pc-windows-msvc.zip"
+$line = Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith("  $archive") } | Select-Object -First 1
+if (-not $line) { throw "No SHA256SUMS entry found for $archive" }
+$expected = ($line -split '\s+')[0]
+$actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "SHA-256 mismatch for $archive" }
+$installDir = Join-Path $env:USERPROFILE ".local\bin"
+New-Item -ItemType Directory -Force $installDir | Out-Null
+Expand-Archive -LiteralPath $archive -DestinationPath $installDir
+$exe = Join-Path $installDir "potoo-c0-interpreter-v0.1.1-x86_64-pc-windows-msvc\potoo-c0.exe"
+& $exe .\hello.c0
+```
+
+To run `potoo-c0.exe` from any folder, add `$env:USERPROFILE\.local\bin\potoo-c0-interpreter-v0.1.1-x86_64-pc-windows-msvc` to your user `Path` environment variable in Windows Settings.
+
+#### Intel macOS x86_64
+
+```sh
+asset="potoo-c0-interpreter-v0.1.1-x86_64-apple-darwin.tar.gz"
+grep -F "  $asset" SHA256SUMS | shasum -a 256 -c -
+tar -xzf "$asset"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "${asset%.tar.gz}/potoo-c0" "$HOME/.local/bin/potoo-c0"
+export PATH="$HOME/.local/bin:$PATH"
+potoo-c0 hello.c0
+```
+
+#### Apple silicon macOS arm64
+
+```sh
+asset="potoo-c0-interpreter-v0.1.1-aarch64-apple-darwin.tar.gz"
+grep -F "  $asset" SHA256SUMS | shasum -a 256 -c -
+tar -xzf "$asset"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "${asset%.tar.gz}/potoo-c0" "$HOME/.local/bin/potoo-c0"
+export PATH="$HOME/.local/bin:$PATH"
+potoo-c0 hello.c0
+```
+
+On macOS, add the `export PATH="$HOME/.local/bin:$PATH"` line to `~/.zprofile` to keep the command available in future sessions.
 
 ## Use as a Rust library
 
