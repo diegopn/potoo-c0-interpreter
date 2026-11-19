@@ -117,6 +117,8 @@ For imports, use `parse` with a `SourceResolver`. Implement `RuntimeHost` to pro
 
 The source resolver supports built-in libraries and external C0 source libraries supplied as an `.h0` header with an optional `.c0` implementation. This interpreter does not load arbitrary libraries through the native C ABI. That is a boundary of this crate: it forbids unsafe Rust and has no native-library loader. Rust itself supports C ABI calls through `unsafe extern` blocks ([Rust Reference](https://doc.rust-lang.org/reference/items/external-blocks.html)). `RuntimeHost` supplies the host-facing console, command-line argument, file, image, and terminal services used by built-in library functions. These services are distinct from C0 language semantics and are not a general native-function dispatcher.
 
+See [reference coverage](REFERENCE-COVERAGE.md) for the implemented reference areas and Rust host boundary.
+
 ## Development
 
 ```sh
