@@ -28,11 +28,28 @@ pub(crate) enum Import {
 }
 
 pub(crate) fn lex(source: &str, source_id: usize) -> Result<Vec<Token>, Diagnostic> {
+    validate_control_characters(source, source_id)?;
     Lexer {
         remaining: source,
         location: Location::start(source_id),
     }
     .tokens(None)
+}
+
+fn validate_control_characters(source: &str, source_id: usize) -> Result<(), Diagnostic> {
+    let mut location = Location::start(source_id);
+    for ch in source.chars() {
+        if ch.is_control() && !matches!(ch, '\t' | '\r' | '\n' | '\x0b' | '\x0c') {
+            return Err(location.error("non-printing control character"));
+        }
+        if ch == '\n' {
+            location.line += 1;
+            location.column = 1;
+        } else {
+            location.column += 1;
+        }
+    }
+    Ok(())
 }
 
 struct Lexer<'a> {
